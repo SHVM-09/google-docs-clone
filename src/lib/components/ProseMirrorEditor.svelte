@@ -14,15 +14,7 @@
     let response = null;
     let parsedContent = {};
 
-    // Define the underline mark
-    const underlineMark = {
-        underline: {
-            parseDOM: [{ tag: "u" }],
-            toDOM() {
-                return ["u"];
-            },
-        },
-    };
+    
 
     // Initialize ProseMirror Editor
     onMount(() => {
@@ -31,10 +23,95 @@
             return;
         }
 
+        // Define custom marks
+    const customMarks = {
+        strong: {
+            parseDOM: [{ tag: "strong" }, { tag: "b", getAttrs: () => null }],
+            toDOM() {
+                return ["strong"];
+            },
+        },
+        em: {
+            parseDOM: [{ tag: "em" }, { tag: "i", getAttrs: () => null }],
+            toDOM() {
+                return ["em"];
+            },
+        },
+        underline: {
+            parseDOM: [{ tag: "u" }],
+            toDOM() {
+                return ["u"];
+            },
+        },
+        link: {
+            attrs: { href: {} },
+            inclusive: false,
+            parseDOM: [
+                {
+                    tag: "a[href]",
+                    getAttrs(dom) {
+                        return { href: dom.getAttribute("href") };
+                    },
+                },
+            ],
+            toDOM(mark) {
+                return ["a", { href: mark.attrs.href }];
+            },
+        },
+        code: {
+            parseDOM: [{ tag: "code" }],
+            toDOM() {
+                return ["code"];
+            },
+        },
+        text_color: {
+            attrs: { color: { default: null } },
+            parseDOM: [
+                {
+                    style: "color",
+                    getAttrs: (value) => ({ color: value }),
+                },
+            ],
+            toDOM(mark) {
+                return ["span", { style: `color: ${mark.attrs.color}` }, 0];
+            },
+        },
+        alignment: {
+            attrs: { align: { default: "left" } },
+            parseDOM: [
+                {
+                    style: "text-align",
+                    getAttrs: (value) => ({ align: value }),
+                },
+            ],
+            toDOM(mark) {
+                return [
+                    "span",
+                    {
+                        style: `text-align: ${mark.attrs.align}; display: block;`,
+                    },
+                    0,
+                ];
+            },
+        },
+        text_size: {
+            attrs: { size: { default: "14px" } },
+            parseDOM: [
+                {
+                    style: "font-size",
+                    getAttrs: (value) => ({ size: value }),
+                },
+            ],
+            toDOM(mark) {
+                return ["span", { style: `font-size: ${mark.attrs.size};` }, 0];
+            },
+        },
+    };
+
         // Define schema with list support
         const mySchema = new Schema({
             nodes: addListNodes(schema.spec.nodes, "paragraph block*", "block"),
-            marks: schema.spec.marks,
+            marks: { ...schema.spec.marks, ...customMarks },
         });
 
         // Initialize the ProseMirror editor
@@ -155,15 +232,29 @@
 
                         if (element.textRun.textStyle) {
                             textRun.marks = [];
+                            // Handle font size with points-to-pixels conversion (1 point = 1.33 pixels)
+                            const fontSizeInPoints =
+                                element.textRun.textStyle.fontSize?.magnitude ||
+                                11; // Default to 11pt
+                            const fontSizeInPixels = Math.round(
+                                fontSizeInPoints * 1.33,
+                            ); // Convert points to pixels
+                            textRun.marks.push({
+                                type: "text_size",
+                                attrs: { size: `${fontSizeInPixels}px` },
+                            });
 
                             // Bold text
                             if (element.textRun.textStyle.bold) {
                                 textRun.marks.push({ type: "strong" });
                             }
+                            if (element.textRun.textStyle.italic) {
+                                textRun.marks.push({ type: "em" });
+                            }
 
                             // Underlined text
                             if (element.textRun.textStyle.underline) {
-                                textRun.marks.push({ type: "text" });
+                                textRun.marks.push({ type: "underline" });
                             }
 
                             // Links
@@ -177,9 +268,84 @@
                                 });
                             }
                         }
+                        if (
+                            element.textRun.textStyle?.foregroundColor?.color
+                                ?.rgbColor
+                        ) {
+                            const rgb =
+                                element.textRun.textStyle.foregroundColor.color
+                                    .rgbColor;
+
+                            const red =
+                                rgb.red !== undefined
+                                    ? Math.round(rgb.red * 255)
+                                    : 0;
+                            const green =
+                                rgb.green !== undefined
+                                    ? Math.round(rgb.green * 255)
+                                    : 0;
+                            const blue =
+                                rgb.blue !== undefined
+                                    ? Math.round(rgb.blue * 255)
+                                    : 0;
+
+                            const rgbColor = `rgb(${red}, ${green}, ${blue})`;
+
+                            textRun.marks.push({
+                                type: "text_color",
+                                attrs: { color: rgbColor },
+                            });
+                        }
 
                         paragraphContent.push(textRun);
                     }
+                }
+
+                // Determine if the paragraph is a heading
+                let paragraphNode;
+                const namedStyleType =
+                    item.paragraph.paragraphStyle?.namedStyleType;
+                if (namedStyleType?.startsWith("HEADING_")) {
+                    paragraphNode = {
+                        type: "heading",
+                        attrs: {
+                            level: parseInt(namedStyleType.split("_")[1], 10),
+                        },
+                        content: paragraphContent,
+                    };
+                    // Add alignment as a mark to the paragraph
+                    const alignment =
+                        item.paragraph.paragraphStyle?.alignment || "LEFT";
+                    const alignMark =
+                        alignment === "CENTER"
+                            ? "center"
+                            : alignment === "END"
+                              ? "right"
+                              : "left";
+
+                    paragraphNode.marks = [
+                        { type: "alignment", attrs: { align: alignMark } },
+                    ];
+                } else {
+                    // Otherwise, it's a paragraph
+                    paragraphNode = {
+                        type: "paragraph",
+                        content: paragraphContent,
+                    };
+
+                    // Add alignment as a mark to the paragraph
+                    const alignment =
+                        item.paragraph.paragraphStyle?.alignment || "LEFT";
+                    const alignMark =
+                        alignment === "CENTER"
+                            ? "center"
+                            : alignment === "END"
+                              ? "right"
+                              : "left";
+
+                    paragraphNode.marks = [
+                        { type: "alignment", attrs: { align: alignMark } },
+                    ];
                 }
 
                 if (item.paragraph.bullet) {
@@ -188,12 +354,10 @@
                     const nestingLevelIndex =
                         item.paragraph.bullet.nestingLevel || 0;
 
-                    // Determine the list type (ordered or bullet)
                     const nestingLevel =
                         listInfo?.listProperties?.nestingLevels?.[
                             nestingLevelIndex
                         ];
-                        console.log(`Glyph Type: ${nestingLevel?.glyphType}`);
                     const listType =
                         nestingLevel?.glyphType === "GLYPH_TYPE_UNSPECIFIED"
                             ? "ordered_list"
@@ -201,66 +365,36 @@
 
                     const listItem = {
                         type: "list_item",
-                        content: [
-                            {
-                                type: "paragraph",
-                                content: paragraphContent,
-                            },
-                        ],
+                        content: [paragraphNode],
                     };
 
-                    // Group consecutive list items by listId
                     if (!currentList || currentList.attrs.listId !== listId) {
-                        // Close the previous list and start a new one
                         if (currentList) {
                             content.push(currentList);
                         }
 
                         currentList = {
                             type: listType,
-                            attrs: { listId }, // Track the listId for grouping
+                            attrs: { listId },
                             content: [],
                         };
                     }
 
                     currentList.content.push(listItem);
                 } else {
-                    // Close the current list if we encounter a non-list paragraph
                     if (currentList) {
                         content.push(currentList);
                         currentList = null;
                     }
 
-                    // Handle normal paragraphs
+                    // Push the paragraph or heading node if it is not part of a list
                     if (paragraphContent.length > 0) {
-                        const paragraphNode = {
-                            type: "paragraph",
-                            content: paragraphContent,
-                        };
-
-                        // Heading support
-                        if (
-                            item.paragraph.paragraphStyle?.namedStyleType?.startsWith(
-                                "HEADING_",
-                            )
-                        ) {
-                            paragraphNode.type = "heading";
-                            paragraphNode.attrs = {
-                                level: parseInt(
-                                    item.paragraph.paragraphStyle.namedStyleType.split(
-                                        "_",
-                                    )[1],
-                                ),
-                            };
-                        }
-
                         content.push(paragraphNode);
                     }
                 }
             }
         }
 
-        // Push any remaining open list
         if (currentList) {
             content.push(currentList);
         }
@@ -327,9 +461,9 @@
         height: 0;
         overflow: hidden;
     }
-    :global(.ProseMirror-trailingBreak){
+    /* :global(.ProseMirror-trailingBreak){
         display: none;
-    }
+    } */
     :global(.ProseMirror) {
         position: relative;
         font-size: 14px;
@@ -351,7 +485,7 @@
     }
     :global(.ProseMirror-menubar) {
         display: inline-block;
-        position: absolute;
+        position: absolute !important;
         padding: 5px;
         width: 100%;
         border-radius: 3px;
