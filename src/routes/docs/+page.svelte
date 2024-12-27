@@ -6,26 +6,32 @@
 
   // Utility function to parse text style
   const parseTextStyle = (textStyle) => {
-  if (!textStyle) return "";
-  const { bold, italic, underline, fontSize, foregroundColor } = textStyle;
+    if (!textStyle) return "";
+    const { bold, italic, underline, fontSize, foregroundColor, backgroundColor } = textStyle;
 
-  const color = foregroundColor?.color?.rgbColor
-    ? `rgb(${Math.round(foregroundColor.color.rgbColor.red * 255 || 0)}, 
-           ${Math.round(foregroundColor.color.rgbColor.green * 255 || 0)}, 
-           ${Math.round(foregroundColor.color.rgbColor.blue * 255 || 0)})`
-    : "inherit";
+    const color = foregroundColor?.color?.rgbColor
+      ? `rgb(${Math.round(foregroundColor.color.rgbColor.red * 255 || 0)}, 
+             ${Math.round(foregroundColor.color.rgbColor.green * 255 || 0)}, 
+             ${Math.round(foregroundColor.color.rgbColor.blue * 255 || 0)})`
+      : "inherit";
 
-  return `
-    font-weight: ${bold ? "bold" : "normal"}; 
-    font-style: ${italic ? "italic" : "normal"}; 
-    text-decoration: ${underline ? "underline" : "none"};
-    font-size: ${fontSize?.magnitude || 16}px; 
-    color: ${color};
-  `;
-};
+    const bgColor = backgroundColor?.color?.rgbColor
+      ? `rgb(${Math.round(backgroundColor.color.rgbColor.red * 255 || 0)}, 
+             ${Math.round(backgroundColor.color.rgbColor.green * 255 || 0)}, 
+             ${Math.round(backgroundColor.color.rgbColor.blue * 255 || 0)})`
+      : "transparent";
 
+    return `
+      font-weight: ${bold ? "bold" : "normal"}; 
+      font-style: ${italic ? "italic" : "normal"}; 
+      text-decoration: ${underline ? "underline" : "none"};
+      font-size: ${fontSize?.magnitude || 16}px; 
+      color: ${color};
+      background-color: ${bgColor};
+    `;
+  };
 
-  const parseTableCellStyle = (cell) => {
+  const parseTableCellStyle = (cell, paragraphAlignment) => {
     const backgroundColor = cell.backgroundColor
       ? `rgb(${Math.round(cell.backgroundColor.red * 255 || 0)}, 
              ${Math.round(cell.backgroundColor.green * 255 || 0)}, 
@@ -38,11 +44,32 @@
              ${Math.round(cell.borderColor.blue * 255 || 0)})`
       : "transparent";
 
-    return `background-color: ${backgroundColor}; border: 1px solid ${borderColor};`;
+    const alignment = paragraphAlignment?.toLowerCase() || "left";
+
+    const padding = `
+      padding-left: ${cell.tableCellStyle?.paddingLeft?.magnitude || 0}px;
+      padding-right: ${cell.tableCellStyle?.paddingRight?.magnitude || 0}px;
+      padding-top: ${cell.tableCellStyle?.paddingTop?.magnitude || 0}px;
+      padding-bottom: ${cell.tableCellStyle?.paddingBottom?.magnitude || 0}px;
+    `;
+
+    return `
+      background-color: ${backgroundColor};
+      border: 1px solid ${borderColor};
+      text-align: ${alignment};
+      ${padding}
+    `;
+  };
+
+  const replaceTabsAndSpaces = (text) => {
+    // Replace tabs (\t) with a visible space (e.g., 4 spaces or a horizontal tab span)
+    // Replace spaces with non-breaking spaces
+    return text.replace(/ /g, " ").replace(/\t/g, "    "); // Use 4 spaces for tab representation
   };
 
   const extractContent = (data) => {
     if (!data) return [];
+    console.log(data);
     const content = data.body?.content || [];
     const lists = data.lists || {};
     const inlineObjects = data.inlineObjects || {};
@@ -56,22 +83,28 @@
       if (!paragraph || !paragraph.elements) {
         const table = block?.table;
         if (table) {
+          const alignment = block?.tableStyle?.alignment || "LEFT";
           const rows = table.tableRows.map((row) =>
-            row.tableCells.map((cell) => ({
-              content: cell.content.flatMap((p) =>
-                p.paragraph.elements.map((el) => ({
-                  content: el.textRun?.content || "",
-                  textStyle: el.textRun?.textStyle || {},
-                  link: el.textRun?.textStyle?.link?.url || null,
-                }))
-              ),
-              backgroundColor: cell.tableCellStyle?.backgroundColor?.color
-                ?.rgbColor,
-              borderColor: cell.tableCellStyle?.borderColor?.color?.rgbColor,
-            }))
+            row.tableCells.map((cell) => {
+              const cellAlignment =
+                cell.content?.[0]?.paragraph?.paragraphStyle?.alignment || alignment;
+              return {
+                content: cell.content.flatMap((p) =>
+                  p.paragraph.elements.map((el) => ({
+                    content: replaceTabsAndSpaces(el.textRun?.content || ""),
+                    textStyle: el.textRun?.textStyle || {},
+                    link: el.textRun?.textStyle?.link?.url || null,
+                  }))
+                ),
+                backgroundColor: cell.tableCellStyle?.backgroundColor?.color?.rgbColor,
+                borderColor: cell.tableCellStyle?.borderColor?.color?.rgbColor,
+                alignment: cellAlignment,
+                tableCellStyle: cell.tableCellStyle,
+              };
+            })
           );
 
-          parsed.push({ type: "table", rows });
+          parsed.push({ type: "table", rows, alignment });
         }
         return;
       }
@@ -84,10 +117,12 @@
           lists[listId]?.listProperties?.nestingLevels?.[nestingLevel]
             ?.glyphType || "DISC";
 
+        const alignment = paragraph.paragraphStyle?.alignment || "LEFT";
+
         if (!listMap[listId]) listMap[listId] = [];
-        const textContent = paragraph.elements.map((el) =>
-          el.textRun?.content || ""
-        ).join("");
+        const textContent = paragraph.elements
+          .map((el) => replaceTabsAndSpaces(el.textRun?.content || ""))
+          .join("");
 
         if (textContent) {
           listMap[listId].push({
@@ -99,7 +134,7 @@
         }
 
         if (!parsed.some((item) => item.listId === listId)) {
-          parsed.push({ type: "list", listId });
+          parsed.push({ type: "list", listId, alignment });
         }
       } else {
         const hasInlineObject = paragraph.elements.some(
@@ -116,6 +151,8 @@
                 inlineObjects[inlineObjectId]?.inlineObjectProperties
                   ?.embeddedObject;
 
+              const alignment = paragraph.paragraphStyle?.alignment || "LEFT";
+
               if (embeddedObject?.imageProperties) {
                 parsed.push({
                   type: "image",
@@ -127,6 +164,7 @@
                   marginLeft: embeddedObject.marginLeft?.magnitude || 0,
                   marginRight: embeddedObject.marginRight?.magnitude || 0,
                   alt: embeddedObject.description || "",
+                  alignment,
                 });
               }
             }
@@ -138,6 +176,8 @@
             link: el?.textRun?.textStyle?.link?.url || null,
           }));
 
+          const alignment = paragraph.paragraphStyle?.alignment || "LEFT";
+
           if (textElements.length > 0) {
             parsed.push({
               type: "p",
@@ -145,6 +185,7 @@
               indentStart: paragraph.indentStart?.magnitude || 0,
               spaceAbove: paragraph.spaceAbove?.magnitude || 0,
               spaceBelow: paragraph.spaceBelow?.magnitude || 0,
+              alignment,
             });
           }
         }
@@ -177,7 +218,7 @@
           stack.push(item);
         });
 
-        parsed[index] = { type: "list", items: root };
+        parsed[index] = { type: "list", items: root, alignment: block.alignment };
       }
     });
 
@@ -186,17 +227,17 @@
 
   const renderList = (list) => {
     return `
-      <ul class="list-none ml-8">
+      <ul class="list-none ml-8" style="text-align: ${list.alignment.toLowerCase()}">
         ${list.items
           .map(
             (item) => `
-          <li style="list-style-type: ${getGlyphType(item.glyphType)};">
+          <li class="list-inside" style="list-style-type: ${getGlyphType(item.glyphType)};">
             <span style="${parseTextStyle(item.textStyle)}">
               ${item.text}
             </span>
             ${
               item.children
-                ? renderList({ type: "list", items: item.children })
+                ? renderList({ type: "list", items: item.children, alignment: list.alignment })
                 : ""
             }
           </li>`
@@ -243,16 +284,16 @@
         {#if block.type === "p"}
           <p
             class="text-base leading-6 min-h-4"
-            style={`margin-top: ${block.spaceAbove}px; margin-left: ${block.indentStart}px; margin-bottom: ${block.spaceBelow}px;`}
+            style={`margin-top: ${block.spaceAbove}px; margin-left: ${block.indentStart}px; margin-bottom: ${block.spaceBelow}px; text-align: ${block.alignment.toLowerCase()};`}
           >
             {#each block.content as element}
               {#if element.link}
                 <a href={element.link} target="_blank" style={`${parseTextStyle(element.textStyle)}`}>
-                  {element.content.replace(/ /g, " ")}
+                  {replaceTabsAndSpaces(element.content)}
                 </a>
               {:else}
                 <span style={`${parseTextStyle(element.textStyle)}`}>
-                  {element.content.replace(/ /g, " ")}
+                  {replaceTabsAndSpaces(element.content)}
                 </span>
               {/if}
             {/each}
@@ -265,26 +306,36 @@
             alt={block.alt}
             width={block.width}
             height={block.height}
-            style={`margin-top: ${block.marginTop}px; margin-bottom: ${block.marginBottom}px; margin-left: ${block.marginLeft}px; margin-right: ${block.marginRight}px;`}
-          />
+            style={`
+              margin-top: ${block.marginTop}px;
+              margin-bottom: ${block.marginBottom}px;
+              margin-left: ${block.alignment === "CENTER" ? "auto" : block.marginLeft + "px"};
+              margin-right: ${block.alignment === "CENTER" ? "auto" : block.marginRight + "px"};
+              display: ${block.alignment === "CENTER" ? "block" : "inline"};
+              float: ${block.alignment === "RIGHT" ? "right" : block.alignment === "LEFT" ? "left" : "none"};
+            `}
+          />        
         {:else if block.type === "table"}
           <table
             class="table-auto border-collapse w-full"
-            style={`border: 1px solid ${block.borderColor || "#ccc"};`}
+            style={`border: 1px solid ${block.borderColor || "transparent"}; text-align: ${block.alignment.toLowerCase()};`}
           >
             <tbody>
               {#each block.rows as row}
                 <tr>
                   {#each row as cell}
-                    <td style={parseTableCellStyle(cell)} class="p-2">
+                    <td
+                      style={parseTableCellStyle(cell, cell.alignment || block.alignment)}
+                      class="p-2"
+                    >
                       {#each cell.content as element}
                         {#if element.link}
                           <a href={element.link} target="_blank" style={`${parseTextStyle(element.textStyle)}`}>
-                            {element.content.replace(/ /g, " ")}
+                            {replaceTabsAndSpaces(element.content)}
                           </a>
                         {:else}
                           <span style={`${parseTextStyle(element.textStyle)}`}>
-                            {element.content.replace(/ /g, " ")}
+                            {replaceTabsAndSpaces(element.content)}
                           </span>
                         {/if}
                       {/each}
