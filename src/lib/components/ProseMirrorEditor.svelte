@@ -143,7 +143,7 @@
 
                     // Handle textRun elements
                     if (element.textRun) {
-                        const textValue = element.textRun.content.trim();
+                        const textValue = element.textRun.content;
 
                         // Skip empty text nodes
                         if (!textValue) continue;
@@ -193,6 +193,7 @@
                         listInfo?.listProperties?.nestingLevels?.[
                             nestingLevelIndex
                         ];
+                        console.log(`Glyph Type: ${nestingLevel?.glyphType}`);
                     const listType =
                         nestingLevel?.glyphType === "GLYPH_TYPE_UNSPECIFIED"
                             ? "ordered_list"
@@ -325,6 +326,9 @@
         visibility: hidden;
         height: 0;
         overflow: hidden;
+    }
+    :global(.ProseMirror-trailingBreak){
+        display: none;
     }
     :global(.ProseMirror) {
         position: relative;
