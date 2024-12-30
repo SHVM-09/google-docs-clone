@@ -3,6 +3,10 @@
 
   let response;
   let parsedContent = [];
+  let namedStyles = {}; // To store named styles from the document
+
+  // Page styling variables
+  let pageStyle = {};
 
   // Utility function to parse text style
   const parseTextStyle = (textStyle) => {
@@ -21,13 +25,32 @@
              ${Math.round(backgroundColor.color.rgbColor.blue * 255 || 0)})`
       : "transparent";
 
+    // Use fontSize from textStyle if available; otherwise, inherit
+    const fontSizeStyle = fontSize?.magnitude ? `${fontSize.magnitude}px` : "inherit";
+
     return `
       font-weight: ${bold ? "bold" : "normal"}; 
       font-style: ${italic ? "italic" : "normal"}; 
       text-decoration: ${underline ? "underline" : "none"};
-      font-size: ${fontSize?.magnitude || 16}px; 
+      font-size: ${fontSizeStyle};
       color: ${color};
       background-color: ${bgColor};
+    `;
+  };
+
+  // Utility function to parse named styles
+  const parseNamedStyle = (styleType) => {
+    const style = namedStyles[styleType];
+    if (!style) return "";
+
+    const textStyle = parseTextStyle(style.textStyle || {});
+    const paragraphStyle = style.paragraphStyle || {};
+
+    return `
+      ${textStyle}
+      margin-top: ${paragraphStyle.spaceAbove?.magnitude || 0}px;
+      margin-bottom: ${paragraphStyle.spaceBelow?.magnitude || 0}px;
+      text-align: ${paragraphStyle.alignment?.toLowerCase() || "left"};
     `;
   };
 
@@ -53,23 +76,73 @@
       padding-bottom: ${cell.tableCellStyle?.paddingBottom?.magnitude || 0}px;
     `;
 
+    // Extract the paragraphStyle and namedStyle for fallback
+    const paragraphStyle = cell.content?.[0]?.paragraph?.paragraphStyle || {};
+    const namedStyleType = paragraphStyle.namedStyleType || "NORMAL_TEXT";
+    const namedStyle = namedStyles[namedStyleType]?.textStyle || {};
+
+    // Fallback to namedStyles if textStyle is empty
+    const textStyle = cell.content?.[0]?.paragraph?.elements?.[0]?.textRun?.textStyle || namedStyle;
+    const fontSize = textStyle?.fontSize?.magnitude
+      ? `${textStyle.fontSize.magnitude}px`
+      : "inherit";
+
+    const lineSpacing = paragraphStyle.lineSpacing ? `${paragraphStyle.lineSpacing}%` : "normal";
+
     return `
       background-color: ${backgroundColor};
       border: 1px solid ${borderColor};
       text-align: ${alignment};
+      font-size: ${fontSize};
+      line-height: ${lineSpacing};
       ${padding}
     `;
   };
 
   const replaceTabsAndSpaces = (text) => {
-    // Replace tabs (\t) with a visible space (e.g., 4 spaces or a horizontal tab span)
-    // Replace spaces with non-breaking spaces
-    return text.replace(/ /g, " ").replace(/\t/g, "    "); // Use 4 spaces for tab representation
+    return text.replace(/ /g, " ").replace(/\t/g, "    ");
   };
+
+  const renderTableContent = (content) =>
+    content
+      .map((element) =>
+        element.link
+          ? `<a href="${element.link}" style="${parseTextStyle(element.textStyle)}">${replaceTabsAndSpaces(
+              element.content
+            )}</a>`
+          : `<span style="${parseTextStyle(element.textStyle)}">${replaceTabsAndSpaces(element.content)}</span>`
+      )
+      .join("");
 
   const extractContent = (data) => {
     if (!data) return [];
     console.log(data);
+
+    // Apply page-level styles
+    const pageSize = data.documentStyle.pageSize || {};
+    console.log(pageSize,"pageSize");
+    const margins = {
+      marginTop: data.documentStyle.marginTop?.magnitude || 0,
+      marginBottom: data.documentStyle.marginBottom?.magnitude || 0,
+      marginLeft: data.documentStyle.marginLeft?.magnitude || 0,
+      marginRight: data.documentStyle.marginRight?.magnitude || 0,
+    };
+    pageStyle = {
+      width: `${pageSize.width?.magnitude || 612}px`,
+      height: `${pageSize.height?.magnitude || 792}px`,
+      // padding: `${margins.marginTop}px ${margins.marginRight}px ${margins.marginBottom}px ${margins.marginLeft}px`,
+      "background-color": data.background?.color?.rgbColor
+        ? `rgb(${Math.round(data.background.color.rgbColor.red * 255 || 0)}, 
+               ${Math.round(data.background.color.rgbColor.green * 255 || 0)}, 
+               ${Math.round(data.background.color.rgbColor.blue * 255 || 0)})`
+        : "white",
+    };
+
+    namedStyles = data.namedStyles?.styles.reduce((acc, style) => {
+      acc[style.namedStyleType] = style;
+      return acc;
+    }, {});
+
     const content = data.body?.content || [];
     const lists = data.lists || {};
     const inlineObjects = data.inlineObjects || {};
@@ -83,15 +156,17 @@
       if (!paragraph || !paragraph.elements) {
         const table = block?.table;
         if (table) {
-          const alignment = block?.tableStyle?.alignment || "LEFT";
+          const columnWidths = table.tableStyle?.tableColumnProperties?.map(
+            (col) => `${col.width.magnitude}pt`
+          );
           const rows = table.tableRows.map((row) =>
-            row.tableCells.map((cell) => {
+            row.tableCells.map((cell, columnIndex) => {
               const cellAlignment =
-                cell.content?.[0]?.paragraph?.paragraphStyle?.alignment || alignment;
+                cell.content?.[0]?.paragraph?.paragraphStyle?.alignment || "LEFT";
               return {
                 content: cell.content.flatMap((p) =>
                   p.paragraph.elements.map((el) => ({
-                    content: replaceTabsAndSpaces(el.textRun?.content || ""),
+                    content: el.textRun?.content || "",
                     textStyle: el.textRun?.textStyle || {},
                     link: el.textRun?.textStyle?.link?.url || null,
                   }))
@@ -100,11 +175,12 @@
                 borderColor: cell.tableCellStyle?.borderColor?.color?.rgbColor,
                 alignment: cellAlignment,
                 tableCellStyle: cell.tableCellStyle,
+                columnWidth: columnWidths?.[columnIndex] || "auto",
               };
             })
           );
 
-          parsed.push({ type: "table", rows, alignment });
+          parsed.push({ type: "table", rows, columnWidths });
         }
         return;
       }
@@ -114,8 +190,7 @@
         const nestingLevel = paragraph.bullet.nestingLevel || 0;
 
         const glyphType =
-          lists[listId]?.listProperties?.nestingLevels?.[nestingLevel]
-            ?.glyphType || "DISC";
+          lists[listId]?.listProperties?.nestingLevels?.[nestingLevel]?.glyphType || "DISC";
 
         const alignment = paragraph.paragraphStyle?.alignment || "LEFT";
 
@@ -134,7 +209,12 @@
         }
 
         if (!parsed.some((item) => item.listId === listId)) {
-          parsed.push({ type: "list", listId, alignment });
+          parsed.push({
+            type: "list",
+            listId,
+            alignment,
+            namedStyle: paragraph.paragraphStyle?.namedStyleType || "NORMAL_TEXT",
+          });
         }
       } else {
         const hasInlineObject = paragraph.elements.some(
@@ -170,11 +250,21 @@
             }
           }
         } else {
-          const textElements = paragraph.elements.map((el) => ({
-            content: el?.textRun?.content || "",
-            textStyle: el?.textRun?.textStyle || {},
-            link: el?.textRun?.textStyle?.link?.url || null,
-          }));
+          const textElements = paragraph.elements.map((el) => {
+            if (el.equation) {
+              return {
+                content: "Equation",
+                isEquation: true,
+                equationDetails: el.equation.suggestedInsertionIds, // Store equation details if needed
+              };
+            }
+
+            return {
+              content: el?.textRun?.content || "",
+              textStyle: el?.textRun?.textStyle || {},
+              link: el?.textRun?.textStyle?.link?.url || null,
+            };
+          });
 
           const alignment = paragraph.paragraphStyle?.alignment || "LEFT";
 
@@ -186,6 +276,7 @@
               spaceAbove: paragraph.spaceAbove?.magnitude || 0,
               spaceBelow: paragraph.spaceBelow?.magnitude || 0,
               alignment,
+              namedStyle: paragraph.paragraphStyle?.namedStyleType || "NORMAL_TEXT",
             });
           }
         }
@@ -218,26 +309,26 @@
           stack.push(item);
         });
 
-        parsed[index] = { type: "list", items: root, alignment: block.alignment };
+        parsed[index] = { type: "list", items: root, alignment: block.alignment, namedStyle: block.namedStyle };
       }
     });
 
     return parsed;
   };
 
-  const renderList = (list) => {
+  const renderList = (list, namedStyle = "NORMAL_TEXT") => {
     return `
-      <ul class="list-none ml-8" style="text-align: ${list.alignment.toLowerCase()}">
+      <ul class="list-none ml-8" style="text-align: ${list.alignment.toLowerCase()}; ${parseNamedStyle(namedStyle)}">
         ${list.items
           .map(
             (item) => `
-          <li class="list-inside" style="list-style-type: ${getGlyphType(item.glyphType)};">
+          <li class="list-inside" style="list-style-type: ${getGlyphType(item.glyphType)}; ${parseNamedStyle(namedStyle)}">
             <span style="${parseTextStyle(item.textStyle)}">
               ${item.text}
             </span>
             ${
               item.children
-                ? renderList({ type: "list", items: item.children, alignment: list.alignment })
+                ? renderList({ type: "list", items: item.children, alignment: list.alignment }, namedStyle)
                 : ""
             }
           </li>`
@@ -277,68 +368,65 @@
   });
 </script>
 
-<div class="min-h-screen bg-gray-100 flex justify-center items-center py-10">
-  <div class="bg-white w-[8.5in] h-[11in] shadow-lg border border-gray-300 p-8 rounded-md overflow-auto">
-    <div class="space-y-4">
+<div class="min-h-screen bg-gray-100 flex justify-center items-center">
+  <div class="shadow-lg border border-gray-300 p-4" style={`box-sizing: border-box; ${Object.entries(pageStyle).map(([key, value]) => `${key}: ${value};`).join(" ")}`}>
       {#each parsedContent as block}
         {#if block.type === "p"}
           <p
             class="text-base leading-6 min-h-4"
-            style={`margin-top: ${block.spaceAbove}px; margin-left: ${block.indentStart}px; margin-bottom: ${block.spaceBelow}px; text-align: ${block.alignment.toLowerCase()};`}
+            style={`margin-left: ${block.indentStart}px; ${parseNamedStyle(block.namedStyle)}`}
           >
             {#each block.content as element}
-              {#if element.link}
-                <a href={element.link} target="_blank" style={`${parseTextStyle(element.textStyle)}`}>
+              {#if element.isEquation}
+                <span class="text-red-500 italic">"{element.equationDetails || "no suggest id found"}"</span>
+              {:else if element.link}
+                <a href={element.link} target="_blank" style={`${parseTextStyle(element.textStyle)} font-size: inherit;`}>
                   {replaceTabsAndSpaces(element.content)}
                 </a>
               {:else}
-                <span style={`${parseTextStyle(element.textStyle)}`}>
+                <span style={`${parseTextStyle(element.textStyle)} font-size: inherit;`}>
                   {replaceTabsAndSpaces(element.content)}
                 </span>
               {/if}
             {/each}
           </p>
         {:else if block.type === "list"}
-          {@html renderList(block)}
+          {@html renderList(block, block.namedStyle)}
         {:else if block.type === "image"}
-          <img
-            src={block.src}
-            alt={block.alt}
-            width={block.width}
-            height={block.height}
+          <div
+            class="image-container"
             style={`
+              display: ${block.alignment === "CENTER" ? "block" : "inline-block"};
+              text-align: ${block.alignment === "CENTER" ? "center" : "inherit"};
               margin-top: ${block.marginTop}px;
               margin-bottom: ${block.marginBottom}px;
-              margin-left: ${block.alignment === "CENTER" ? "auto" : block.marginLeft + "px"};
-              margin-right: ${block.alignment === "CENTER" ? "auto" : block.marginRight + "px"};
-              display: ${block.alignment === "CENTER" ? "block" : "inline"};
-              float: ${block.alignment === "RIGHT" ? "right" : block.alignment === "LEFT" ? "left" : "none"};
             `}
-          />        
+          >
+            <img
+              src={block.src}
+              alt={block.alt}
+              width={block.width}
+              height={block.height}
+              style={`
+                margin-left: ${block.alignment === "CENTER" ? "auto" : block.marginLeft + "px"};
+                margin-right: ${block.alignment === "CENTER" ? "auto" : block.marginRight + "px"};
+                display: ${block.alignment === "CENTER" ? "block" : "inline-block"};
+              `}
+            />
+          </div>
         {:else if block.type === "table"}
           <table
-            class="table-auto border-collapse w-full"
-            style={`border: 1px solid ${block.borderColor || "transparent"}; text-align: ${block.alignment.toLowerCase()};`}
+            class="table-auto border-collapse"
+            style="border: 1px solid transparent;"
           >
             <tbody>
               {#each block.rows as row}
                 <tr>
-                  {#each row as cell}
+                  {#each row as cell, columnIndex}
                     <td
-                      style={parseTableCellStyle(cell, cell.alignment || block.alignment)}
-                      class="p-2"
+                      style={`${parseTableCellStyle(cell, cell.alignment)} width: ${block.columnWidths[columnIndex]};`}
                     >
-                      {#each cell.content as element}
-                        {#if element.link}
-                          <a href={element.link} target="_blank" style={`${parseTextStyle(element.textStyle)}`}>
-                            {replaceTabsAndSpaces(element.content)}
-                          </a>
-                        {:else}
-                          <span style={`${parseTextStyle(element.textStyle)}`}>
-                            {replaceTabsAndSpaces(element.content)}
-                          </span>
-                        {/if}
-                      {/each}
+                      {@html renderTableContent(cell.content)}
                     </td>
                   {/each}
                 </tr>
@@ -347,6 +435,5 @@
           </table>
         {/if}
       {/each}
-    </div>
   </div>
 </div>
