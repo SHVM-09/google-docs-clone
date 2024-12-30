@@ -16,85 +16,67 @@
 
     
 
-    // Initialize ProseMirror Editor
-    onMount(() => {
+// Initialize ProseMirror Editor
+onMount(() => {
         if (!contentElement || !editorElement) {
             console.error("Editor or content element is missing!");
             return;
         }
 
         // Define custom marks
-    const customMarks = {
-        strong: {
-            parseDOM: [{ tag: "strong" }, { tag: "b", getAttrs: () => null }],
-            toDOM() {
-                return ["strong"];
-            },
-        },
-        em: {
-            parseDOM: [{ tag: "em" }, { tag: "i", getAttrs: () => null }],
-            toDOM() {
-                return ["em"];
-            },
-        },
-        underline: {
-            parseDOM: [{ tag: "u" }],
-            toDOM() {
-                return ["u"];
-            },
-        },
-        link: {
-            attrs: { href: {} },
-            inclusive: false,
-            parseDOM: [
-                {
-                    tag: "a[href]",
-                    getAttrs(dom) {
-                        return { href: dom.getAttribute("href") };
-                    },
+        const customMarks = {
+            strong: {
+                parseDOM: [{ tag: "strong" }, { tag: "b", getAttrs: () => null }],
+                toDOM() {
+                    return ["strong"];
                 },
-            ],
-            toDOM(mark) {
-                return ["a", { href: mark.attrs.href }];
             },
-        },
-        code: {
-            parseDOM: [{ tag: "code" }],
-            toDOM() {
-                return ["code"];
-            },
-        },
-        text_color: {
-            attrs: { color: { default: null } },
-            parseDOM: [
-                {
-                    style: "color",
-                    getAttrs: (value) => ({ color: value }),
+            em: {
+                parseDOM: [{ tag: "em" }, { tag: "i", getAttrs: () => null }],
+                toDOM() {
+                    return ["em"];
                 },
-            ],
-            toDOM(mark) {
-                return ["span", { style: `color: ${mark.attrs.color}` }, 0];
             },
-        },
-        alignment: {
-            attrs: { align: { default: "left" } },
-            parseDOM: [
-                {
-                    style: "text-align",
-                    getAttrs: (value) => ({ align: value }),
+            underline: {
+                parseDOM: [{ tag: "u" }],
+                toDOM() {
+                    return ["u"];
                 },
-            ],
-            toDOM(mark) {
-                return [
-                    "span",
+            },
+            link: {
+                attrs: { href: {} },
+                inclusive: false,
+                parseDOM: [
                     {
-                        style: `text-align: ${mark.attrs.align}; display: block;`,
+                        tag: "a[href]",
+                        getAttrs(dom) {
+                            return { href: dom.getAttribute("href") };
+                        },
                     },
-                    0,
-                ];
+                ],
+                toDOM(mark) {
+                    return ["a", { href: mark.attrs.href }];
+                },
             },
-        },
-        text_size: {
+            code: {
+                parseDOM: [{ tag: "code" }],
+                toDOM() {
+                    return ["code"];
+                },
+            },
+            text_color: {
+                attrs: { color: { default: null } },
+                parseDOM: [
+                    {
+                        style: "color",
+                        getAttrs: (value) => ({ color: value }),
+                    },
+                ],
+                toDOM(mark) {
+                    return ["span", { style: `color: ${mark.attrs.color}` }, 0];
+                },
+            },
+            text_size: {
             attrs: { size: { default: "14px" } },
             parseDOM: [
                 {
@@ -106,12 +88,61 @@
                 return ["span", { style: `font-size: ${mark.attrs.size};` }, 0];
             },
         },
-    };
+        };
 
-        // Define schema with list support
+        // Start with the basic schema
+        const baseNodes = schema.spec.nodes;
+        // Modify paragraph and heading nodes to include alignment
+        const nodesWithAlignment = baseNodes.update(
+            "paragraph",
+            {
+                content: "inline*",
+                group: "block",
+                attrs: { align: { default: "left" } },
+                parseDOM: [{
+                    tag: "p",
+                    getAttrs(dom) {
+                        return { align: dom.style.textAlign || "left" };
+                    }
+                }],
+                toDOM(node) {
+                    return ["p", { style: `text-align: ${node.attrs.align}` }, 0];
+                }
+            }
+        ).update(
+            "heading",
+            {
+                content: "inline*",
+                group: "block",
+                attrs: { 
+                    level: { default: 1 },
+                    align: { default: "left" }
+                },
+                parseDOM: Array.from({ length: 6 }, (_, i) => ({
+                    tag: `h${i + 1}`,
+                    getAttrs(dom) {
+                        return { 
+                            level: i + 1,
+                            align: dom.style.textAlign || "left"
+                        };
+                    }
+                })),
+                toDOM(node) {
+                    return [`h${node.attrs.level}`, 
+                        { style: `text-align: ${node.attrs.align}` }, 
+                        0
+                    ];
+                }
+            }
+        );
+
+        // Create schema with list support and alignment
         const mySchema = new Schema({
-            nodes: addListNodes(schema.spec.nodes, "paragraph block*", "block"),
-            marks: { ...schema.spec.marks, ...customMarks },
+            nodes: addListNodes(nodesWithAlignment, "paragraph block*", "block"),
+            marks: {
+                ...schema.spec.marks,
+                ...customMarks
+            }
         });
 
         // Initialize the ProseMirror editor
@@ -120,12 +151,205 @@
                 doc: DOMParser.fromSchema(mySchema).parse(contentElement),
                 plugins: exampleSetup({ schema: mySchema }),
             }),
+            dispatchTransaction(transaction) {
+                // Log transaction steps and state before/after
+                // console.log("Transaction Steps:", transaction.steps);
+                // console.log("Transaction Doc Before:", transaction.before.toJSON());
+                // console.log("Transaction Doc After:", transaction.doc.toJSON());
+
+                // Apply the transaction to update the editor state
+                const newState = editorView.state.apply(transaction);
+                editorView.updateState(newState);
+
+                // Call detectChanges to analyze steps
+                // detectChanges(transaction);
+
+                 // Prepare and send the batch update request to Google Docs
+                sendBatchUpdateToGoogleDoc(transaction);
+                
+            }
+
         });
 
         return () => {
             editorView.destroy();
         };
     });
+
+    let debounceTimer;
+    let pendingRequests = [];
+
+    // Helper function to map ProseMirror marks to Google Docs text styles
+    function getTextStyleFromMark(mark, remove = false) {
+        const textStyle = {};
+        if (mark.type === "strong") {
+            textStyle.bold = !remove; // Add or remove bold
+        } else if (mark.type === "em") {
+            textStyle.italic = !remove; // Add or remove italic
+        } else if (mark.type === "underline") {
+            textStyle.underline = !remove; // Add or remove underline
+        }
+
+        return textStyle;
+    }
+
+    async function sendBatchUpdateToGoogleDoc(transaction) {
+        const documentId = "155FIoSa6hpvrRJHNKz825TIo-LTQMqfkggxAE0xYvsI";
+        const userId = "12345";
+
+        // Prepare the batch update requests
+        const newRequests = transaction.steps.map((step) => {
+            if (step.slice?.content && step.slice.content.size > 0) {
+                // Handle content insertions
+                console.log("step.from", step.from);
+                console.log("Content Inserted:", step.slice.content.textBetween(0, step.slice.content.size));
+                return {
+                    insertText: {
+                        // location: { index: step.from },
+                        location: { index: step.from},
+                        text: step.slice.content.textBetween(0, step.slice.content.size),
+                    },
+                };
+            }
+
+            // Handle mark updates (bold, italic, underline, etc.)
+            if (step.toJSON) {
+                // console.log("Step Details:", step.toJSON());
+                const stepData = step.toJSON();
+                console.log("Step Data:", stepData);
+
+                if (stepData.stepType) {
+                    const { from, to, mark } = stepData;
+
+                    if (stepData.stepType === "addMark") {
+                        // Add mark (e.g., bold)
+                        const styleUpdate = getTextStyleFromMark(stepData.mark, false);
+                        console.log("Mark Add:",styleUpdate);
+                        return {
+                            updateTextStyle: {
+                                // range: { startIndex: from, endIndex: to },
+                                range: {
+                                    startIndex: from - 1, // Adjusted
+                                    endIndex: to - 1, // Adjusted
+                                },
+
+                                textStyle: styleUpdate,
+                                fields: "*",
+                            },
+                        };
+                    }
+
+                    if (stepData.stepType === "removeMark") {
+                        // Remove mark (e.g., un-bold)
+                        const styleUpdate = getTextStyleFromMark(stepData.mark, true);
+                        return {
+                            updateTextStyle: {
+                                // range: { startIndex: from, endIndex: to },
+                                range: {
+                                    startIndex: from - 1, // Adjusted
+                                    endIndex: to - 1, // Adjusted
+                                },
+                                textStyle: styleUpdate,
+                                fields: Object.keys(styleUpdate).join(","),
+                            },
+                        };
+                    }
+                }
+            }
+            
+            if (step.from !== step.to) {
+                // Handle content deletions
+                return {
+                    deleteContentRange: {
+                        // range: {
+                        //     startIndex: step.from,
+                        //     endIndex: step.to,
+                        // },
+                        range: {
+                            startIndex: step.from - 1, // Adjusted
+                            endIndex: step.to - 1, // Adjusted
+                        },
+                    },
+                }
+            }
+
+            // Log unhandled step types
+            console.log("Unhandled step type:", step);
+            return null;
+        }).filter(Boolean); // Remove nulls
+
+        if (!newRequests.length) {
+            console.log("No changes to update.");
+            return;
+        }
+
+        // Add new requests to the pending requests queue
+        pendingRequests.push(...newRequests);
+
+        // Clear the existing debounce timer
+        clearTimeout(debounceTimer);
+
+        // Set a new debounce timer
+        debounceTimer = setTimeout(async () => {
+            if (!pendingRequests.length) return;
+
+            try {
+                // Send the batch update to the backend API
+                const response = await fetch("http://localhost:3000/google-doc/batchUpdate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        documentId,
+                        userId,
+                        requests: pendingRequests,
+                    }),
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    console.log("Batch update successful:", result);
+                } else {
+                    console.error("Batch update failed:", result.error);
+                }
+            } catch (error) {
+                console.error("Error sending batch update:", error);
+            } finally {
+                // Clear the pending requests queue after the update
+                pendingRequests = [];
+            }
+        }, 500); // Adjust debounce time as needed (e.g., 500ms)
+    }
+
+
+
+    
+    function detectChanges(transaction) {
+        transaction.steps.forEach((step, index) => {
+            console.log(`Step ---------------- ${index + 1}:`, step);
+
+            // Check if the step modifies a range in the document
+            if (step.from !== undefined && step.to !== undefined) {
+                console.log(
+                    `Change from position ${step.from} to ${step.to} in the document.`
+                );
+            }
+
+            // Check for added content
+            if (step.slice?.content) {
+                console.log("Slice of content added:", step.slice.content.toJSON());
+            }
+
+            // Log positional changes with the step map
+            if (step.getMap) {
+                console.log("Step Map:", step.getMap());
+            }
+
+            // General logging for all steps
+            // console.log("Step Details:", step.toJSON ? step.toJSON() : step);
+        });
+    }
+
 
     // Log Editor Content
     function logEditorContent() {
@@ -175,235 +399,197 @@
 
     // Convert Google Docs API data to ProseMirror format
     async function convertToProseMirror(data) {
-        const content = [];
-        let currentList = null;
-        const lists = data.lists || {}; // Lists mapping
-        const inlineObjects = data.inlineObjects || {}; // Inline objects mapping
+    const content = [];
+    let currentList = null;
+    const lists = data.lists || {}; // Lists mapping
+    const inlineObjects = data.inlineObjects || {}; // Inline objects mapping
 
-        for (const item of data.body.content) {
-            if (item.paragraph) {
-                const paragraphContent = [];
+    for (const item of data.body.content) {
+        if (item.paragraph) {
+            const paragraphContent = [];
 
-                for (const element of item.paragraph.elements) {
-                    // Handle inline object elements (images)
-                    if (element.inlineObjectElement) {
-                        const objectId =
-                            element.inlineObjectElement.inlineObjectId;
-                        const inlineObject = inlineObjects[objectId];
+            for (const element of item.paragraph.elements) {
+                // Handle inline object elements (images)
+                if (element.inlineObjectElement) {
+                    const objectId = element.inlineObjectElement.inlineObjectId;
+                    const inlineObject = inlineObjects[objectId];
 
-                        if (
-                            inlineObject?.inlineObjectProperties?.embeddedObject
-                                ?.imageProperties
-                        ) {
-                            const imageUrl =
-                                inlineObject.inlineObjectProperties
-                                    .embeddedObject.imageProperties.contentUri;
-                            const base64Src =
-                                await fetchImageAsBase64(imageUrl);
+                    if (
+                        inlineObject?.inlineObjectProperties?.embeddedObject
+                            ?.imageProperties
+                    ) {
+                        const imageUrl =
+                            inlineObject.inlineObjectProperties.embeddedObject.imageProperties.contentUri;
+                        const base64Src = await fetchImageAsBase64(imageUrl);
 
-                            const imageNode = {
-                                type: "image",
-                                attrs: {
-                                    src: base64Src,
-                                    alt:
-                                        inlineObject.inlineObjectProperties
-                                            .embeddedObject.description || "",
-                                    title:
-                                        inlineObject.inlineObjectProperties
-                                            .embeddedObject.title || "",
-                                },
-                            };
-
-                            paragraphContent.push(imageNode);
-                        }
-                    }
-
-                    // Handle textRun elements
-                    if (element.textRun) {
-                        const textValue = element.textRun.content;
-
-                        // Skip empty text nodes
-                        if (!textValue) continue;
-
-                        const textRun = {
-                            type: "text",
-                            text: textValue,
+                        const imageNode = {
+                            type: "image",
+                            attrs: {
+                                src: base64Src,
+                                alt:
+                                    inlineObject.inlineObjectProperties
+                                        .embeddedObject.description || "",
+                                title:
+                                    inlineObject.inlineObjectProperties
+                                        .embeddedObject.title || "",
+                            },
                         };
 
-                        if (element.textRun.textStyle) {
-                            textRun.marks = [];
-                            // Handle font size with points-to-pixels conversion (1 point = 1.33 pixels)
-                            const fontSizeInPoints =
-                                element.textRun.textStyle.fontSize?.magnitude ||
-                                11; // Default to 11pt
-                            const fontSizeInPixels = Math.round(
-                                fontSizeInPoints * 1.33,
-                            ); // Convert points to pixels
-                            textRun.marks.push({
-                                type: "text_size",
-                                attrs: { size: `${fontSizeInPixels}px` },
-                            });
+                        paragraphContent.push(imageNode);
+                    }
+                }
 
-                            // Bold text
-                            if (element.textRun.textStyle.bold) {
-                                textRun.marks.push({ type: "strong" });
-                            }
-                            if (element.textRun.textStyle.italic) {
-                                textRun.marks.push({ type: "em" });
-                            }
+                // Handle textRun elements
+                if (element.textRun) {
+                    const textValue = element.textRun.content.replace(/\n/g, '');
 
-                            // Underlined text
-                            if (element.textRun.textStyle.underline) {
-                                textRun.marks.push({ type: "underline" });
-                            }
+                    // Skip empty text nodes
+                    if (!textValue) continue;
 
-                            // Links
-                            if (element.textRun.textStyle.link) {
-                                textRun.marks.push({
-                                    type: "link",
-                                    attrs: {
-                                        href: element.textRun.textStyle.link
-                                            .url,
-                                    },
-                                });
-                            }
+                    const textRun = {
+                        type: "text",
+                        text: textValue,
+                        marks: [],
+                    };
+
+                    // Apply text styles
+                    if (element.textRun.textStyle) {
+                        // Font size (convert points to pixels)
+                        const fontSizeInPoints =
+                            element.textRun.textStyle.fontSize?.magnitude || 11; // Default to 11pt
+                        const fontSizeInPixels = Math.round(fontSizeInPoints * 1.33); // Convert points to pixels
+                        textRun.marks.push({
+                            type: "text_size",
+                            attrs: { size: `${fontSizeInPixels}px` },
+                        });
+
+                        // Bold text
+                        if (element.textRun.textStyle.bold) {
+                            textRun.marks.push({ type: "strong" });
                         }
-                        if (
-                            element.textRun.textStyle?.foregroundColor?.color
-                                ?.rgbColor
-                        ) {
-                            const rgb =
-                                element.textRun.textStyle.foregroundColor.color
-                                    .rgbColor;
 
-                            const red =
-                                rgb.red !== undefined
-                                    ? Math.round(rgb.red * 255)
-                                    : 0;
-                            const green =
-                                rgb.green !== undefined
-                                    ? Math.round(rgb.green * 255)
-                                    : 0;
-                            const blue =
-                                rgb.blue !== undefined
-                                    ? Math.round(rgb.blue * 255)
-                                    : 0;
+                        // Italic text
+                        if (element.textRun.textStyle.italic) {
+                            textRun.marks.push({ type: "em" });
+                        }
+
+                        // Underlined text
+                        if (element.textRun.textStyle.underline) {
+                            textRun.marks.push({ type: "underline" });
+                        }
+
+                        // Links
+                        if (element.textRun.textStyle.link) {
+                            textRun.marks.push({
+                                type: "link",
+                                attrs: { href: element.textRun.textStyle.link.url },
+                            });
+                        }
+
+                        // Foreground color
+                        if (element.textRun.textStyle.foregroundColor?.color?.rgbColor) {
+                            const rgb = element.textRun.textStyle.foregroundColor.color.rgbColor;
+                            const red = rgb.red !== undefined ? Math.round(rgb.red * 255) : 0;
+                            const green = rgb.green !== undefined ? Math.round(rgb.green * 255) : 0;
+                            const blue = rgb.blue !== undefined ? Math.round(rgb.blue * 255) : 0;
 
                             const rgbColor = `rgb(${red}, ${green}, ${blue})`;
-
                             textRun.marks.push({
                                 type: "text_color",
                                 attrs: { color: rgbColor },
                             });
                         }
-
-                        paragraphContent.push(textRun);
-                    }
-                }
-
-                // Determine if the paragraph is a heading
-                let paragraphNode;
-                const namedStyleType =
-                    item.paragraph.paragraphStyle?.namedStyleType;
-                if (namedStyleType?.startsWith("HEADING_")) {
-                    paragraphNode = {
-                        type: "heading",
-                        attrs: {
-                            level: parseInt(namedStyleType.split("_")[1], 10),
-                        },
-                        content: paragraphContent,
-                    };
-                    // Add alignment as a mark to the paragraph
-                    const alignment =
-                        item.paragraph.paragraphStyle?.alignment || "LEFT";
-                    const alignMark =
-                        alignment === "CENTER"
-                            ? "center"
-                            : alignment === "END"
-                              ? "right"
-                              : "left";
-
-                    paragraphNode.marks = [
-                        { type: "alignment", attrs: { align: alignMark } },
-                    ];
-                } else {
-                    // Otherwise, it's a paragraph
-                    paragraphNode = {
-                        type: "paragraph",
-                        content: paragraphContent,
-                    };
-
-                    // Add alignment as a mark to the paragraph
-                    const alignment =
-                        item.paragraph.paragraphStyle?.alignment || "LEFT";
-                    const alignMark =
-                        alignment === "CENTER"
-                            ? "center"
-                            : alignment === "END"
-                              ? "right"
-                              : "left";
-
-                    paragraphNode.marks = [
-                        { type: "alignment", attrs: { align: alignMark } },
-                    ];
-                }
-
-                if (item.paragraph.bullet) {
-                    const listId = item.paragraph.bullet.listId;
-                    const listInfo = lists[listId];
-                    const nestingLevelIndex =
-                        item.paragraph.bullet.nestingLevel || 0;
-
-                    const nestingLevel =
-                        listInfo?.listProperties?.nestingLevels?.[
-                            nestingLevelIndex
-                        ];
-                    const listType =
-                        nestingLevel?.glyphType === "GLYPH_TYPE_UNSPECIFIED"
-                            ? "ordered_list"
-                            : "bullet_list";
-
-                    const listItem = {
-                        type: "list_item",
-                        content: [paragraphNode],
-                    };
-
-                    if (!currentList || currentList.attrs.listId !== listId) {
-                        if (currentList) {
-                            content.push(currentList);
-                        }
-
-                        currentList = {
-                            type: listType,
-                            attrs: { listId },
-                            content: [],
-                        };
                     }
 
-                    currentList.content.push(listItem);
-                } else {
+                    paragraphContent.push(textRun);
+                }
+            }
+
+            // Determine alignment and type of block
+            const alignment =
+                item.paragraph.paragraphStyle?.alignment || "LEFT";
+            const alignValue =
+                alignment === "CENTER"
+                    ? "center"
+                    : alignment === "END"
+                    ? "right"
+                    : "left";
+
+            let paragraphNode;
+            const namedStyleType = item.paragraph.paragraphStyle?.namedStyleType;
+
+            if (namedStyleType?.startsWith("HEADING_")) {
+                paragraphNode = {
+                    type: "heading",
+                    attrs: {
+                        level: parseInt(namedStyleType.split("_")[1], 10),
+                        align: alignValue, // Apply alignment as an attribute
+                    },
+                    content: paragraphContent,
+                };
+            } else {
+                paragraphNode = {
+                    type: "paragraph",
+                    attrs: {
+                        align: alignValue, // Apply alignment as an attribute
+                    },
+                    content: paragraphContent,
+                };
+            }
+
+            if (item.paragraph.bullet) {
+                const listId = item.paragraph.bullet.listId;
+                const listInfo = lists[listId];
+                const nestingLevelIndex = item.paragraph.bullet.nestingLevel || 0;
+
+                const nestingLevel =
+                    listInfo?.listProperties?.nestingLevels?.[nestingLevelIndex];
+                const listType =
+                    nestingLevel?.glyphType === "GLYPH_TYPE_UNSPECIFIED"
+                        ? "ordered_list"
+                        : "bullet_list";
+
+                const listItem = {
+                    type: "list_item",
+                    content: [paragraphNode],
+                };
+
+                if (!currentList || currentList.attrs.listId !== listId) {
                     if (currentList) {
                         content.push(currentList);
-                        currentList = null;
                     }
 
-                    // Push the paragraph or heading node if it is not part of a list
-                    if (paragraphContent.length > 0) {
-                        content.push(paragraphNode);
-                    }
+                    currentList = {
+                        type: listType,
+                        attrs: { listId },
+                        content: [],
+                    };
+                }
+
+                currentList.content.push(listItem);
+            } else {
+                if (currentList) {
+                    content.push(currentList);
+                    currentList = null;
+                }
+
+                // Push the paragraph or heading node if it is not part of a list 
+                if (paragraphContent.length > 0) {
+                    content.push(paragraphNode);
                 }
             }
         }
-
-        if (currentList) {
-            content.push(currentList);
-        }
-
-        return {
-            type: "doc",
-            content,
-        };
     }
+
+    if (currentList) {
+        content.push(currentList);
+    }
+
+    return {
+        type: "doc",
+        content,
+    };
+}
 
     // Function to fetch and convert image to Base64
     async function fetchImageAsBase64(imageUrl) {
@@ -464,6 +650,7 @@
     /* :global(.ProseMirror-trailingBreak){
         display: none;
     } */
+     
     :global(.ProseMirror) {
         position: relative;
         font-size: 14px;
