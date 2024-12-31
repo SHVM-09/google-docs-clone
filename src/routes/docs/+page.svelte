@@ -2,11 +2,8 @@
   import { onMount } from "svelte";
 
   let response;
-  let parsedContent = [];
+  let parsedPages = []; // To store parsed pages with section break handling
   let namedStyles = {}; // To store named styles from the document
-
-  // Page styling variables
-  let pageStyle = {};
 
   // Utility function to parse text style
   const parseTextStyle = (textStyle) => {
@@ -25,8 +22,7 @@
              ${Math.round(backgroundColor.color.rgbColor.blue * 255 || 0)})`
       : "transparent";
 
-    // Use fontSize from textStyle if available; otherwise, inherit
-    const fontSizeStyle = fontSize?.magnitude ? `${fontSize.magnitude}px` : "inherit";
+    const fontSizeStyle = fontSize?.magnitude ? `${Math.round(fontSize.magnitude)}px` : "inherit";
 
     return `
       font-weight: ${bold ? "bold" : "normal"}; 
@@ -48,8 +44,8 @@
 
     return `
       ${textStyle}
-      margin-top: ${paragraphStyle.spaceAbove?.magnitude || 0}px;
-      margin-bottom: ${paragraphStyle.spaceBelow?.magnitude || 0}px;
+      margin-top: ${Math.round(paragraphStyle.spaceAbove?.magnitude || 0)}px;
+      margin-bottom: ${Math.round(paragraphStyle.spaceBelow?.magnitude || 0)}px;
       text-align: ${paragraphStyle.alignment?.toLowerCase() || "left"};
     `;
   };
@@ -70,24 +66,22 @@
     const alignment = paragraphAlignment?.toLowerCase() || "left";
 
     const padding = `
-      padding-left: ${cell.tableCellStyle?.paddingLeft?.magnitude || 0}px;
-      padding-right: ${cell.tableCellStyle?.paddingRight?.magnitude || 0}px;
-      padding-top: ${cell.tableCellStyle?.paddingTop?.magnitude || 0}px;
-      padding-bottom: ${cell.tableCellStyle?.paddingBottom?.magnitude || 0}px;
+      padding-left: ${Math.round(cell.tableCellStyle?.paddingLeft?.magnitude || 0)}px;
+      padding-right: ${Math.round(cell.tableCellStyle?.paddingRight?.magnitude || 0)}px;
+      padding-top: ${Math.round(cell.tableCellStyle?.paddingTop?.magnitude || 0)}px;
+      padding-bottom: ${Math.round(cell.tableCellStyle?.paddingBottom?.magnitude || 0)}px;
     `;
 
-    // Extract the paragraphStyle and namedStyle for fallback
     const paragraphStyle = cell.content?.[0]?.paragraph?.paragraphStyle || {};
     const namedStyleType = paragraphStyle.namedStyleType || "NORMAL_TEXT";
     const namedStyle = namedStyles[namedStyleType]?.textStyle || {};
 
-    // Fallback to namedStyles if textStyle is empty
     const textStyle = cell.content?.[0]?.paragraph?.elements?.[0]?.textRun?.textStyle || namedStyle;
     const fontSize = textStyle?.fontSize?.magnitude
-      ? `${textStyle.fontSize.magnitude}px`
+      ? `${Math.round(textStyle.fontSize.magnitude)}px`
       : "inherit";
 
-    const lineSpacing = paragraphStyle.lineSpacing ? `${paragraphStyle.lineSpacing}%` : "normal";
+    const lineSpacing = paragraphStyle.lineSpacing ? `${Math.round(paragraphStyle.lineSpacing)}%` : "normal";
 
     return `
       background-color: ${backgroundColor};
@@ -117,208 +111,244 @@
   const extractContent = (data) => {
     if (!data) return [];
     console.log(data);
-
-    // Apply page-level styles
+    
     const pageSize = data.documentStyle.pageSize || {};
-    console.log(pageSize,"pageSize");
     const margins = {
-      marginTop: data.documentStyle.marginTop?.magnitude || 0,
-      marginBottom: data.documentStyle.marginBottom?.magnitude || 0,
-      marginLeft: data.documentStyle.marginLeft?.magnitude || 0,
-      marginRight: data.documentStyle.marginRight?.magnitude || 0,
+      marginTop: Math.round(data.documentStyle.marginTop?.magnitude || 0),
+      marginBottom: Math.round(data.documentStyle.marginBottom?.magnitude || 0),
+      marginLeft: Math.round(data.documentStyle.marginLeft?.magnitude || 0),
+      marginRight: Math.round(data.documentStyle.marginRight?.magnitude || 0),
     };
-    pageStyle = {
-      width: `${pageSize.width?.magnitude || 612}px`,
-      height: `${pageSize.height?.magnitude || 792}px`,
-      // padding: `${margins.marginTop}px ${margins.marginRight}px ${margins.marginBottom}px ${margins.marginLeft}px`,
+    const defaultPageStyle = {
+      width: `${Math.round(pageSize.width?.magnitude || 612)}px`,
+      height: `${Math.round(pageSize.height?.magnitude || 792)}px`,
       "background-color": data.background?.color?.rgbColor
         ? `rgb(${Math.round(data.background.color.rgbColor.red * 255 || 0)}, 
                ${Math.round(data.background.color.rgbColor.green * 255 || 0)}, 
                ${Math.round(data.background.color.rgbColor.blue * 255 || 0)})`
         : "white",
+      marginTop: `${margins.marginTop}px`,
+      marginBottom: `${margins.marginBottom}px`,
     };
+
+    let currentPage = {
+      content: [],
+      style: { ...defaultPageStyle },
+    };
+
+    const pages = [currentPage];
+    let firstSectionBreakSkipped = false; // Flag to skip the first section break
 
     namedStyles = data.namedStyles?.styles.reduce((acc, style) => {
       acc[style.namedStyleType] = style;
       return acc;
     }, {});
 
+    console.log(namedStyles);
+
     const content = data.body?.content || [];
     const lists = data.lists || {};
     const inlineObjects = data.inlineObjects || {};
 
-    const parsed = [];
     const listMap = {};
 
     content.forEach((block) => {
-      const paragraph = block?.paragraph;
-
-      if (!paragraph || !paragraph.elements) {
-        const table = block?.table;
-        if (table) {
-          const columnWidths = table.tableStyle?.tableColumnProperties?.map(
-            (col) => `${col.width.magnitude}pt`
-          );
-          const rows = table.tableRows.map((row) =>
-            row.tableCells.map((cell, columnIndex) => {
-              const cellAlignment =
-                cell.content?.[0]?.paragraph?.paragraphStyle?.alignment || "LEFT";
-              return {
-                content: cell.content.flatMap((p) =>
-                  p.paragraph.elements.map((el) => ({
-                    content: el.textRun?.content || "",
-                    textStyle: el.textRun?.textStyle || {},
-                    link: el.textRun?.textStyle?.link?.url || null,
-                  }))
-                ),
-                backgroundColor: cell.tableCellStyle?.backgroundColor?.color?.rgbColor,
-                borderColor: cell.tableCellStyle?.borderColor?.color?.rgbColor,
-                alignment: cellAlignment,
-                tableCellStyle: cell.tableCellStyle,
-                columnWidth: columnWidths?.[columnIndex] || "auto",
-              };
-            })
-          );
-
-          parsed.push({ type: "table", rows, columnWidths });
-        }
-        return;
-      }
-
-      if (paragraph.bullet) {
-        const listId = paragraph.bullet.listId;
-        const nestingLevel = paragraph.bullet.nestingLevel || 0;
-
-        const glyphType =
-          lists[listId]?.listProperties?.nestingLevels?.[nestingLevel]?.glyphType || "DISC";
-
-        const alignment = paragraph.paragraphStyle?.alignment || "LEFT";
-
-        if (!listMap[listId]) listMap[listId] = [];
-        const textContent = paragraph.elements
-          .map((el) => replaceTabsAndSpaces(el.textRun?.content || ""))
-          .join("");
-
-        if (textContent) {
-          listMap[listId].push({
-            text: textContent,
-            textStyle: paragraph.elements[0]?.textRun?.textStyle || {},
-            nestingLevel,
-            glyphType,
-          });
+      if (block.sectionBreak) {
+        if (!firstSectionBreakSkipped) {
+          firstSectionBreakSkipped = true; // Skip the first section break
+          return;
         }
 
-        if (!parsed.some((item) => item.listId === listId)) {
-          parsed.push({
-            type: "list",
-            listId,
-            alignment,
-            namedStyle: paragraph.paragraphStyle?.namedStyleType || "NORMAL_TEXT",
-          });
-        }
+        const sectionStyle = block.sectionBreak.sectionStyle || {};
+        currentPage = {
+          content: [],
+          style: {
+            width: `${Math.round(sectionStyle.pageWidth?.magnitude || pageSize.width?.magnitude || 612)}px`,
+            height: `${Math.round(sectionStyle.pageHeight?.magnitude || pageSize.height?.magnitude || 792)}px`,
+            "background-color": data.background?.color?.rgbColor
+              ? `rgb(${Math.round(data.background.color.rgbColor.red * 255 || 0)}, 
+                     ${Math.round(data.background.color.rgbColor.green * 255 || 0)}, 
+                     ${Math.round(data.background.color.rgbColor.blue * 255 || 0)})`
+              : "white",
+            marginTop: `${margins.marginTop}px`,
+            marginBottom: `${margins.marginBottom}px`,
+          },
+        };
+        pages.push(currentPage);
       } else {
-        const hasInlineObject = paragraph.elements.some(
-          (el) =>
-            el.inlineObjectElement &&
-            inlineObjects[el.inlineObjectElement.inlineObjectId]
-        );
+        const paragraph = block?.paragraph;
 
-        if (hasInlineObject) {
-          for (const element of paragraph.elements) {
-            if (element.inlineObjectElement) {
-              const inlineObjectId = element.inlineObjectElement.inlineObjectId;
-              const embeddedObject =
-                inlineObjects[inlineObjectId]?.inlineObjectProperties
-                  ?.embeddedObject;
+        if (!paragraph || !paragraph.elements) {
+          const table = block?.table;
+          if (table) {
+            const columnWidths = table.tableStyle?.tableColumnProperties?.map(
+              (col) => `${Math.round(col.width.magnitude)}pt`
+            );
+            const rows = table.tableRows.map((row) =>
+              row.tableCells.map((cell, columnIndex) => {
+                const cellAlignment =
+                  cell.content?.[0]?.paragraph?.paragraphStyle?.alignment || "LEFT";
+                return {
+                  content: cell.content.flatMap((p) =>
+                    p.paragraph.elements.map((el) => ({
+                      content: el.textRun?.content || "",
+                      textStyle: el.textRun?.textStyle || {},
+                      link: el.textRun?.textStyle?.link?.url || null,
+                    }))
+                  ),
+                  backgroundColor: cell.tableCellStyle?.backgroundColor?.color?.rgbColor,
+                  borderColor: cell.tableCellStyle?.borderColor?.color?.rgbColor,
+                  alignment: cellAlignment,
+                  tableCellStyle: cell.tableCellStyle,
+                  columnWidth: columnWidths?.[columnIndex] || "auto",
+                };
+              })
+            );
 
-              const alignment = paragraph.paragraphStyle?.alignment || "LEFT";
-
-              if (embeddedObject?.imageProperties) {
-                parsed.push({
-                  type: "image",
-                  src: embeddedObject.imageProperties.contentUri,
-                  width: embeddedObject.size?.width?.magnitude || 100,
-                  height: embeddedObject.size?.height?.magnitude || 100,
-                  marginTop: embeddedObject.marginTop?.magnitude || 0,
-                  marginBottom: embeddedObject.marginBottom?.magnitude || 0,
-                  marginLeft: embeddedObject.marginLeft?.magnitude || 0,
-                  marginRight: embeddedObject.marginRight?.magnitude || 0,
-                  alt: embeddedObject.description || "",
-                  alignment,
-                });
-              }
-            }
+            currentPage.content.push({ type: "table", rows, columnWidths });
           }
-        } else {
-          const textElements = paragraph.elements.map((el) => {
-            if (el.equation) {
-              return {
-                content: "Equation",
-                isEquation: true,
-                equationDetails: el.equation.suggestedInsertionIds, // Store equation details if needed
-              };
-            }
+          return;
+        }
 
-            return {
-              content: el?.textRun?.content || "",
-              textStyle: el?.textRun?.textStyle || {},
-              link: el?.textRun?.textStyle?.link?.url || null,
-            };
-          });
+        if (paragraph.bullet) {
+          const listId = paragraph.bullet.listId;
+          const nestingLevel = paragraph.bullet.nestingLevel || 0;
+
+          const glyphType =
+            lists[listId]?.listProperties?.nestingLevels?.[nestingLevel]?.glyphType || "DISC";
 
           const alignment = paragraph.paragraphStyle?.alignment || "LEFT";
 
-          if (textElements.length > 0) {
-            parsed.push({
-              type: "p",
-              content: textElements,
-              indentStart: paragraph.indentStart?.magnitude || 0,
-              spaceAbove: paragraph.spaceAbove?.magnitude || 0,
-              spaceBelow: paragraph.spaceBelow?.magnitude || 0,
+          if (!listMap[listId]) listMap[listId] = [];
+          const textContent = paragraph.elements
+            .map((el) => replaceTabsAndSpaces(el.textRun?.content || ""))
+            .join("");
+
+          if (textContent) {
+            listMap[listId].push({
+              text: textContent,
+              textStyle: paragraph.elements[0]?.textRun?.textStyle || {},
+              nestingLevel,
+              glyphType,
+            });
+          }
+
+          if (!currentPage.content.some((item) => item.listId === listId)) {
+            currentPage.content.push({
+              type: "list",
+              listId,
               alignment,
               namedStyle: paragraph.paragraphStyle?.namedStyleType || "NORMAL_TEXT",
             });
           }
+        } else {
+          const hasInlineObject = paragraph.elements.some(
+            (el) =>
+              el.inlineObjectElement &&
+              inlineObjects[el.inlineObjectElement.inlineObjectId]
+          );
+
+          if (hasInlineObject) {
+            for (const element of paragraph.elements) {
+              if (element.inlineObjectElement) {
+                const inlineObjectId = element.inlineObjectElement.inlineObjectId;
+                const embeddedObject =
+                  inlineObjects[inlineObjectId]?.inlineObjectProperties
+                    ?.embeddedObject;
+
+                const alignment = paragraph.paragraphStyle?.alignment || "LEFT";
+
+                if (embeddedObject?.imageProperties) {
+                  currentPage.content.push({
+                    type: "image",
+                    src: embeddedObject.imageProperties.contentUri,
+                    width: Math.round(embeddedObject.size?.width?.magnitude || 100),
+                    height: Math.round(embeddedObject.size?.height?.magnitude || 100),
+                    marginTop: Math.round(embeddedObject.marginTop?.magnitude || 0),
+                    marginBottom: Math.round(embeddedObject.marginBottom?.magnitude || 0),
+                    marginLeft: Math.round(embeddedObject.marginLeft?.magnitude || 0),
+                    marginRight: Math.round(embeddedObject.marginRight?.magnitude || 0),
+                    alt: embeddedObject.description || "",
+                    alignment,
+                  });
+                }
+              }
+            }
+          } else {
+            const textElements = paragraph.elements.map((el) => {
+              if (el.equation) {
+                console.log(el.equation);
+                return {
+                  content: "Equation",
+                  isEquation: true,
+                  equationDetails: el.equation.suggestedInsertionIds,
+                };
+              }
+
+              return {
+                content: el?.textRun?.content || "",
+                textStyle: el?.textRun?.textStyle || {},
+                link: el?.textRun?.textStyle?.link?.url || null,
+              };
+            });
+
+            const alignment = paragraph.paragraphStyle?.alignment || "LEFT";
+
+            if (textElements.length > 0) {
+              currentPage.content.push({
+                type: "p",
+                content: textElements,
+                indentStart: Math.round(paragraph.indentStart?.magnitude || 0),
+                spaceAbove: Math.round(paragraph.spaceAbove?.magnitude || 0),
+                spaceBelow: Math.round(paragraph.spaceBelow?.magnitude || 0),
+                alignment,
+                namedStyle: paragraph.paragraphStyle?.namedStyleType || "NORMAL_TEXT",
+              });
+            }
+          }
         }
       }
     });
 
-    parsed.forEach((block, index) => {
-      if (block.type === "list") {
-        const listId = block.listId;
-        const items = listMap[listId];
-        const root = [];
-        const stack = [];
+    pages.forEach((page) => {
+      page.content.forEach((block, index) => {
+        if (block.type === "list") {
+          const listId = block.listId;
+          const items = listMap[listId];
+          const root = [];
+          const stack = [];
 
-        items.forEach((item) => {
-          while (
-            stack.length > 0 &&
-            stack[stack.length - 1].nestingLevel >= item.nestingLevel
-          ) {
-            stack.pop();
-          }
+          items.forEach((item) => {
+            while (
+              stack.length > 0 &&
+              stack[stack.length - 1].nestingLevel >= item.nestingLevel
+            ) {
+              stack.pop();
+            }
 
-          if (stack.length === 0) {
-            root.push(item);
-          } else {
-            const parent = stack[stack.length - 1];
-            if (!parent.children) parent.children = [];
-            parent.children.push(item);
-          }
+            if (stack.length === 0) {
+              root.push(item);
+            } else {
+              const parent = stack[stack.length - 1];
+              if (!parent.children) parent.children = [];
+              parent.children.push(item);
+            }
 
-          stack.push(item);
-        });
+            stack.push(item);
+          });
 
-        parsed[index] = { type: "list", items: root, alignment: block.alignment, namedStyle: block.namedStyle };
-      }
+          page.content[index] = { type: "list", items: root, alignment: block.alignment, namedStyle: block.namedStyle };
+        }
+      });
     });
 
-    return parsed;
+    return pages;
   };
 
   const renderList = (list, namedStyle = "NORMAL_TEXT") => {
+    if (!list.items || !Array.isArray(list.items)) return "";
     return `
-      <ul class="list-none ml-8" style="text-align: ${list.alignment.toLowerCase()}; ${parseNamedStyle(namedStyle)}">
+      <ul class="list-none ml-8" style="text-align: ${list.alignment?.toLowerCase() || "left"}; ${parseNamedStyle(namedStyle)}">
         ${list.items
           .map(
             (item) => `
@@ -361,16 +391,19 @@
       );
       const res2 = await res.json();
       response = res2.data;
-      parsedContent = extractContent(response);
+      parsedPages = extractContent(response);
     } catch (error) {
       console.error("Error fetching document:", error);
     }
   });
 </script>
 
-<div class="min-h-screen bg-gray-100 flex justify-center items-center">
-  <div class="shadow-lg border border-gray-300 p-4" style={`box-sizing: border-box; ${Object.entries(pageStyle).map(([key, value]) => `${key}: ${value};`).join(" ")}`}>
-      {#each parsedContent as block}
+<div class="min-h-screen bg-gray-100 flex flex-col items-center">
+  {#each parsedPages as page}
+    <div 
+      class="shadow-lg border border-gray-300 p-4" 
+      style={`box-sizing: border-box; margin-top: ${page.style.marginTop}; ${Object.entries(page.style).map(([key, value]) => `${key}: ${value};`).join(" ")}`}>
+      {#each page.content as block}
         {#if block.type === "p"}
           <p
             class="text-base leading-6 min-h-4"
@@ -435,5 +468,6 @@
           </table>
         {/if}
       {/each}
-  </div>
+    </div>
+  {/each}
 </div>
