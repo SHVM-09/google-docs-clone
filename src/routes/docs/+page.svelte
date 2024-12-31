@@ -7,32 +7,42 @@
 
   // Utility function to parse text style
   const parseTextStyle = (textStyle) => {
-    if (!textStyle) return "";
-    const { bold, italic, underline, fontSize, foregroundColor, backgroundColor } = textStyle;
+  if (!textStyle) return "";
+  const { bold, italic, underline, fontSize, foregroundColor, backgroundColor, weightedFontFamily } = textStyle;
 
-    const color = foregroundColor?.color?.rgbColor
-      ? `rgb(${Math.round(foregroundColor.color.rgbColor.red * 255 || 0)}, 
-             ${Math.round(foregroundColor.color.rgbColor.green * 255 || 0)}, 
-             ${Math.round(foregroundColor.color.rgbColor.blue * 255 || 0)})`
-      : "inherit";
+  const color = foregroundColor?.color?.rgbColor
+    ? `rgb(${Math.round(foregroundColor.color.rgbColor.red * 255 || 0)}, 
+           ${Math.round(foregroundColor.color.rgbColor.green * 255 || 0)}, 
+           ${Math.round(foregroundColor.color.rgbColor.blue * 255 || 0)})`
+    : "inherit";
 
-    const bgColor = backgroundColor?.color?.rgbColor
-      ? `rgb(${Math.round(backgroundColor.color.rgbColor.red * 255 || 0)}, 
-             ${Math.round(backgroundColor.color.rgbColor.green * 255 || 0)}, 
-             ${Math.round(backgroundColor.color.rgbColor.blue * 255 || 0)})`
-      : "transparent";
+  const bgColor = backgroundColor?.color?.rgbColor
+    ? `rgb(${Math.round(backgroundColor.color.rgbColor.red * 255 || 0)}, 
+           ${Math.round(backgroundColor.color.rgbColor.green * 255 || 0)}, 
+           ${Math.round(backgroundColor.color.rgbColor.blue * 255 || 0)})`
+    : "transparent";
 
-    const fontSizeStyle = fontSize?.magnitude ? `${Math.round(fontSize.magnitude)}px` : "inherit";
+  const fontSizeStyle = fontSize?.magnitude ? `${Math.round(fontSize.magnitude)}px` : "inherit";
 
-    return `
-      font-weight: ${bold ? "bold" : "normal"}; 
-      font-style: ${italic ? "italic" : "normal"}; 
-      text-decoration: ${underline ? "underline" : "none"};
-      font-size: ${fontSizeStyle};
-      color: ${color};
-      background-color: ${bgColor};
-    `;
-  };
+  const fontFamily = weightedFontFamily?.fontFamily
+    ? `${
+        weightedFontFamily.fontFamily.trim().includes(" ")
+          ? `"${weightedFontFamily.fontFamily.trim()}"`
+          : weightedFontFamily.fontFamily.trim()
+      }`
+    : "inherit";
+
+  return `
+    font-weight: ${bold ? "bold" : "normal"}; 
+    font-style: ${italic ? "italic" : "normal"}; 
+    text-decoration: ${underline ? "underline" : "none"};
+    font-size: ${fontSizeStyle};
+    color: ${color};
+    background-color: ${bgColor};
+    font-family: ${fontFamily};
+  `;
+};
+
 
   // Utility function to parse named styles
   const parseNamedStyle = (styleType) => {
@@ -81,6 +91,10 @@
       ? `${Math.round(textStyle.fontSize.magnitude)}px`
       : "inherit";
 
+    const fontFamily = textStyle?.weightedFontFamily?.fontFamily
+      ? `"${textStyle.weightedFontFamily.fontFamily}"`
+      : "inherit";
+
     const lineSpacing = paragraphStyle.lineSpacing ? `${Math.round(paragraphStyle.lineSpacing)}%` : "normal";
 
     return `
@@ -88,6 +102,7 @@
       border: 1px solid ${borderColor};
       text-align: ${alignment};
       font-size: ${fontSize};
+      font-family: ${fontFamily};
       line-height: ${lineSpacing};
       ${padding}
     `;
@@ -143,8 +158,6 @@
       acc[style.namedStyleType] = style;
       return acc;
     }, {});
-
-    console.log(namedStyles);
 
     const content = data.body?.content || [];
     const lists = data.lists || {};
@@ -346,27 +359,27 @@
   };
 
   const renderList = (list, namedStyle = "NORMAL_TEXT") => {
-    if (!list.items || !Array.isArray(list.items)) return "";
-    return `
-      <ul class="list-none ml-8" style="text-align: ${list.alignment?.toLowerCase() || "left"}; ${parseNamedStyle(namedStyle)}">
-        ${list.items
-          .map(
-            (item) => `
-          <li class="list-inside" style="list-style-type: ${getGlyphType(item.glyphType)}; ${parseNamedStyle(namedStyle)}">
-            <span style="${parseTextStyle(item.textStyle)}">
-              ${item.text}
-            </span>
-            ${
-              item.children
-                ? renderList({ type: "list", items: item.children, alignment: list.alignment }, namedStyle)
-                : ""
-            }
-          </li>`
-          )
-          .join("")}
-      </ul>
-    `;
-  };
+  if (!list.items || !Array.isArray(list.items)) return "";
+  return `
+    <ul class="list-none" style="text-align: ${list.alignment?.toLowerCase() || "left"}; ${parseNamedStyle(namedStyle)}">
+      ${list.items
+        .map(
+          (item) => `
+        <li class="list-inside" style="list-style-type: ${getGlyphType(item.glyphType)}; ${parseNamedStyle(namedStyle)} text-align: ${list.alignment?.toLowerCase() || "left"}">
+          <span style="${parseTextStyle(item.textStyle)}">
+            ${item.text}
+          </span>
+          ${
+            item.children
+              ? renderList({ type: "list", items: item.children, alignment: list.alignment }, namedStyle)
+              : ""
+          }
+        </li>`
+        )
+        .join("")}
+    </ul>
+  `;
+};
 
   const getGlyphType = (glyphType) => {
     switch (glyphType) {
@@ -405,19 +418,25 @@
       style={`box-sizing: border-box; margin-top: ${page.style.marginTop}; ${Object.entries(page.style).map(([key, value]) => `${key}: ${value};`).join(" ")}`}>
       {#each page.content as block}
         {#if block.type === "p"}
-          <p
-            class="text-base leading-6 min-h-4"
+            <p
+            class="min-h-4 h-auto w-full break-words"
             style={`margin-left: ${block.indentStart}px; ${parseNamedStyle(block.namedStyle)}`}
           >
             {#each block.content as element}
               {#if element.isEquation}
-                <span class="text-red-500 italic">"{element.equationDetails || "no suggest id found"}"</span>
+                <span class="text-red-500 italic"> <!-- Block ensures spans stack line by line -->
+                  "{element.equationDetails || "no suggest id found"}"
+                </span>
               {:else if element.link}
-                <a href={element.link} target="_blank" style={`${parseTextStyle(element.textStyle)} font-size: inherit;`}>
+                <a
+                  href={element.link}
+                  target="_blank"
+                  style={`${parseTextStyle(element.textStyle)}`}
+                >
                   {replaceTabsAndSpaces(element.content)}
                 </a>
               {:else}
-                <span style={`${parseTextStyle(element.textStyle)} font-size: inherit;`}>
+                <span style={`${parseTextStyle(element.textStyle)}`}>
                   {replaceTabsAndSpaces(element.content)}
                 </span>
               {/if}

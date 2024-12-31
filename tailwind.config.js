@@ -7,8 +7,16 @@ export default {
   content: ['./src/**/*.{html,js,svelte,ts}'],
 
   theme: {
-    extend: {}
+    extend: {
+      fontFamily: {
+        merriweather: ['Merriweather', 'serif'],
+        courier: ['"Courier New"', 'monospace'],
+        impact: ['Impact', 'sans-serif'],
+        amatic: ['"Amatic SC"', 'cursive'],
+        georgia: ['Georgia', 'serif'],
+      },
+    },
   },
 
-  plugins: [typography, forms, containerQueries]
+  plugins: [typography, forms, containerQueries],
 };
