@@ -193,108 +193,201 @@ onMount(() => {
         return textStyle;
     }
 
+    // Helper to identify if a node is a list
+    function isListNode(node) {
+        return node.type === "bullet_list" || node.type === "ordered_list";
+    }
+
+    // Calculate the range for a list
+    function getListRange(doc, pos) {
+        const resolvedPos = doc.resolve(pos);
+        const parent = resolvedPos.node(resolvedPos.depth);
+
+        // Start and end positions of the parent node
+        let start = resolvedPos.start(resolvedPos.depth);
+        let end = resolvedPos.end(resolvedPos.depth);
+
+        if (start === end) {
+            end += 1; // Expand the range by one character/block
+        }
+
+        return { start, end };
+    }
+
     async function sendBatchUpdateToGoogleDoc(transaction) {
         const documentId = "155FIoSa6hpvrRJHNKz825TIo-LTQMqfkggxAE0xYvsI";
         const userId = "12345";
 
-        // Prepare the batch update requests
         const newRequests = transaction.steps.map((step) => {
-            if (step.slice?.content && step.slice.content.size > 0) {
-                // Handle content insertions
-                console.log("step.from", step.from);
-                console.log("Content Inserted:", step.slice.content.textBetween(0, step.slice.content.size));
+            const oldDoc = transaction.docs[0];
+            const newDoc = transaction.docs[1];
+
+            // Determine whether the current node is a heading
+            const isHeadingNode = (doc, pos) => {
+                const resolvedPos = doc.resolve(pos);
+                const parentNode = resolvedPos.node(resolvedPos.depth);
+                return parentNode?.type.name === "heading";
+            };
+
+            // `getActualPosition` function for heading nodes
+            const getActualPositionForHeading = (doc, pos) => {
+                let count = 1;
+                doc.nodesBetween(1, pos, (node, nodePos) => {
+                    if (nodePos >= pos) return false;
+                    if (node.isText) {
+                        const textLength = Math.min(node.text.length, pos - nodePos);
+                        count += textLength;
+                    }
+                    if (node.isBlock && nodePos + node.nodeSize <= pos) {
+                        count += 1; // Add newline for block nodes
+                    }
+                    return true;
+                });
+                return count;
+            };
+
+            // `getActualPosition` function for non-heading nodes
+            const getActualPositionForNonHeading = (doc, pos) => {
+                let count = 1;
+                doc.nodesBetween(1, pos, (node, nodePos) => {
+                    if (nodePos >= pos) return false;
+                    if (node.isText) {
+                        const textLength = Math.min(node.text.length, pos - nodePos);
+                        count += textLength;
+                    }
+                    if (node.isBlock && nodePos + node.nodeSize <= pos) {
+                        count += 1; // Add newline for block nodes
+                    }
+                    return true;
+                });
+                return count;
+            };
+
+            // Select the correct `getActualPosition` function
+            const getActualPosition = (doc, pos) =>
+                isHeadingNode(doc, pos)
+                    ? getActualPositionForHeading(doc, pos)
+                    : getActualPositionForNonHeading(doc, pos);
+
+
+            // Handle List insertion or removal
+            if (step.toJSON) {
+                const stepData = step.toJSON();
+
+                const startPos = getActualPosition(oldDoc, stepData.from);
+                const endPos = getActualPosition(oldDoc, stepData.to);
+
+                // Handle list creation for replaceAround
+                if (stepData.stepType === "replaceAround" && stepData.slice?.content) {
+                    const listContent = stepData.slice.content[0];
+                    
+                    if (listContent.type === "ordered_list" || listContent.type === "bullet_list") {
+                        const isOrdered = listContent.type === "ordered_list";
+                        const { start, end } = getListRange(oldDoc, stepData.from);
+
+                        return {
+                            createParagraphBullets: {
+                                range: {
+                                    startIndex: getActualPosition(oldDoc, start),
+                                    endIndex: getActualPosition(oldDoc, end -1),
+                                },
+                                bulletPreset: isOrdered
+                                    ? "NUMBERED_DECIMAL_ALPHA_ROMAN"
+                                    : "BULLET_DISC_CIRCLE_SQUARE",
+                            },
+                        };
+                    }
+                }
+
+                // Handle list removal
+                if (stepData.stepType === "replaceAround" && !stepData.slice?.content) {
+                    const startNode = oldDoc.nodeAt(stepData.from);
+
+                    if (isListNode(startNode)) {
+                        const { start, end } = getListRange(oldDoc, stepData.from);
+                        return {
+                            deleteParagraphBullets: {
+                                range: {
+                                    startIndex: getActualPosition(oldDoc, start),
+                                    endIndex: getActualPosition(oldDoc, end),
+                                },
+                            },
+                        };
+                    }
+                }
+            }
+
+            // Handle text insertion (including newlines)
+            if (step.slice?.content && step.slice.content.size > 0 && !step.slice.content.child(0).type.name.includes("list")) {
+                const actualPosition = getActualPosition(oldDoc, step.from);
+                const insertedText = step.slice.content.textBetween(0, step.slice.content.size, "\n", "\n");
+
                 return {
                     insertText: {
-                        // location: { index: step.from },
-                        location: { index: step.from},
-                        text: step.slice.content.textBetween(0, step.slice.content.size),
+                        location: { index: actualPosition },
+                        text: insertedText,
                     },
                 };
             }
 
-            // Handle mark updates (bold, italic, underline, etc.)
+            // Handle text deletion or mark changes (bold, italic, underline)
             if (step.toJSON) {
-                // console.log("Step Details:", step.toJSON());
+                console.log("Step Details:", step.toJSON());
                 const stepData = step.toJSON();
                 console.log("Step Data:", stepData);
+                if (stepData.stepType === "addMark" || stepData.stepType === "removeMark") {
+                    const startPos = getActualPosition(oldDoc, stepData.from);
+                    const endPos = getActualPosition(oldDoc, stepData.to);
 
-                if (stepData.stepType) {
-                    const { from, to, mark } = stepData;
+                    const styleUpdate = getTextStyleFromMark(
+                        stepData.mark,
+                        stepData.stepType === "removeMark"
+                    );
 
-                    if (stepData.stepType === "addMark") {
-                        // Add mark (e.g., bold)
-                        const styleUpdate = getTextStyleFromMark(stepData.mark, false);
-                        console.log("Mark Add:",styleUpdate);
-                        return {
-                            updateTextStyle: {
-                                // range: { startIndex: from, endIndex: to },
-                                range: {
-                                    startIndex: from - 1, // Adjusted
-                                    endIndex: to - 1, // Adjusted
-                                },
-
-                                textStyle: styleUpdate,
-                                fields: "*",
+                    return {
+                        updateTextStyle: {
+                            range: {
+                                startIndex: startPos,
+                                endIndex: endPos,
                             },
-                        };
-                    }
-
-                    if (stepData.stepType === "removeMark") {
-                        // Remove mark (e.g., un-bold)
-                        const styleUpdate = getTextStyleFromMark(stepData.mark, true);
-                        return {
-                            updateTextStyle: {
-                                // range: { startIndex: from, endIndex: to },
-                                range: {
-                                    startIndex: from - 1, // Adjusted
-                                    endIndex: to - 1, // Adjusted
-                                },
-                                textStyle: styleUpdate,
-                                fields: Object.keys(styleUpdate).join(","),
-                            },
-                        };
-                    }
+                            textStyle: styleUpdate,
+                            fields: Object.keys(styleUpdate).join(","),
+                        },
+                    };
                 }
             }
-            
+
+
             if (step.from !== step.to) {
-                // Handle content deletions
+                const startPos = getActualPosition(oldDoc, step.from);
+                const endPos = getActualPosition(oldDoc, step.to);
+
                 return {
                     deleteContentRange: {
-                        // range: {
-                        //     startIndex: step.from,
-                        //     endIndex: step.to,
-                        // },
                         range: {
-                            startIndex: step.from - 1, // Adjusted
-                            endIndex: step.to - 1, // Adjusted
+                            startIndex: startPos,
+                            endIndex: endPos,
                         },
                     },
-                }
+                };
             }
 
-            // Log unhandled step types
-            console.log("Unhandled step type:", step);
             return null;
-        }).filter(Boolean); // Remove nulls
+        }).filter(Boolean);
 
         if (!newRequests.length) {
             console.log("No changes to update.");
             return;
         }
 
-        // Add new requests to the pending requests queue
+        // Add to pending requests and handle debouncing
         pendingRequests.push(...newRequests);
 
-        // Clear the existing debounce timer
         clearTimeout(debounceTimer);
-
-        // Set a new debounce timer
         debounceTimer = setTimeout(async () => {
             if (!pendingRequests.length) return;
 
             try {
-                // Send the batch update to the backend API
                 const response = await fetch("http://localhost:3000/google-doc/batchUpdate", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -315,13 +408,10 @@ onMount(() => {
             } catch (error) {
                 console.error("Error sending batch update:", error);
             } finally {
-                // Clear the pending requests queue after the update
                 pendingRequests = [];
             }
-        }, 500); // Adjust debounce time as needed (e.g., 500ms)
+        }, 1000);
     }
-
-
 
     
     function detectChanges(transaction) {
@@ -441,9 +531,12 @@ onMount(() => {
 
                 // Handle textRun elements
                 if (element.textRun) {
-                    const textValue = element.textRun.content.replace(/\n/g, '');
+                    let textValue = element.textRun.content;
+                   
+                    if (textValue && textValue.trim() !== "") {
+                        textValue = textValue.replace(/\n$/g, '');
+                    }
 
-                    // Skip empty text nodes
                     if (!textValue) continue;
 
                     const textRun = {
@@ -452,6 +545,10 @@ onMount(() => {
                         marks: [],
                     };
 
+                    if (textValue === '\n') {
+                        // add a zero width space which prose mirror will handle correctly
+                        textRun.text = '\u200b';
+                    }
                     // Apply text styles
                     if (element.textRun.textStyle) {
                         // Font size (convert points to pixels)
